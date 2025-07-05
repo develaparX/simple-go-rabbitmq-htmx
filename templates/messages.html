@@ -1,0 +1,25 @@
+{{if .messages}} {{range .messages}}
+<div class="message">
+  <div class="message-header">
+    <span class="message-id">ID: {{.ID}}</span>
+    <span class="message-status status-{{.Status}}">{{.Status}}</span>
+  </div>
+  <div class="message-content">{{.Content}}</div>
+  <div class="message-timestamp">
+    {{.Timestamp.Format "02/01/2006 15:04:05"}}
+  </div>
+  <button
+    class="delete-btn"
+    hx-delete="/messages/{{.ID}}"
+    hx-target="#messages-list"
+    hx-swap="innerHTML"
+    hx-confirm="Yakin ingin menghapus pesan ini?"
+  >
+    ×
+  </button>
+</div>
+{{end}} {{else}}
+<div class="empty-state">
+  <p>Belum ada pesan. Kirim pesan pertama Anda!</p>
+</div>
+{{end}}

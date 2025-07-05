@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{.title}}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      .container {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        text-align: center;
+        margin-bottom: 30px;
+      }
+      .form-group {
+        margin-bottom: 20px;
+      }
+      label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+        color: #555;
+      }
+      input[type="text"],
+      textarea {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 16px;
+        box-sizing: border-box;
+      }
+      textarea {
+        min-height: 100px;
+        resize: vertical;
+      }
+      .btn {
+        background-color: #007bff;
+        color: white;
+        padding: 10px 20px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+        transition: background-color 0.3s;
+      }
+      .btn:hover {
+        background-color: #0056b3;
+      }
+      .btn-danger {
+        background-color: #dc3545;
+      }
+      .btn-danger:hover {
+        background-color: #c82333;
+      }
+      .messages-section {
+        margin-top: 30px;
+      }
+      .message {
+        background: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 4px;
+        padding: 15px;
+        margin-bottom: 10px;
+        position: relative;
+      }
+      .message-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      .message-id {
+        font-weight: bold;
+        color: #007bff;
+      }
+      .message-status {
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: bold;
+      }
+      .status-sent {
+        background-color: #28a745;
+        color: white;
+      }
+      .status-received {
+        background-color: #6c757d;
+        color: white;
+      }
+      .message-content {
+        margin-bottom: 10px;
+        line-height: 1.5;
+      }
+      .message-timestamp {
+        font-size: 12px;
+        color: #6c757d;
+      }
+      .delete-btn {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background-color: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 25px;
+        height: 25px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .delete-btn:hover {
+        background-color: #c82333;
+      }
+      .loading {
+        text-align: center;
+        padding: 20px;
+        color: #666;
+      }
+      .empty-state {
+        text-align: center;
+        padding: 40px;
+        color: #666;
+      }
+      .refresh-btn {
+        background-color: #28a745;
+        float: right;
+        margin-bottom: 20px;
+      }
+      .refresh-btn:hover {
+        background-color: #218838;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>{{.title}}</h1>
+
+      <!-- Form untuk mengirim pesan -->
+      <form hx-post="/send" hx-target="#messages-list" hx-swap="innerHTML">
+        <div class="form-group">
+          <label for="content">Pesan:</label>
+          <textarea
+            id="content"
+            name="content"
+            placeholder="Masukkan pesan Anda di sini..."
+            required
+          ></textarea>
+        </div>
+        <button type="submit" class="btn">Kirim Pesan</button>
+      </form>
+
+      <!-- Daftar pesan -->
+      <div class="messages-section">
+        <h2>Daftar Pesan</h2>
+        <button
+          class="btn refresh-btn"
+          hx-get="/messages"
+          hx-target="#messages-list"
+          hx-swap="innerHTML"
+        >
+          Refresh
+        </button>
+        <div style="clear: both"></div>
+        <div id="messages-list" hx-get="/messages" hx-trigger="load">
+          <div class="loading">Memuat pesan...</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Auto refresh setiap 5 detik
+      setInterval(function () {
+        htmx.trigger("#messages-list", "refresh");
+      }, 5000);
+
+      // Custom event untuk refresh
+      document.addEventListener("htmx:configRequest", function (evt) {
+        if (
+          evt.detail.path === "/messages" &&
+          evt.detail.triggerName === "refresh"
+        ) {
+          evt.detail.headers = evt.detail.headers || {};
+        }
+      });
+    </script>
+  </body>
+</html>
