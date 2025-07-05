@@ -8,36 +8,58 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/streadway/amqp"
 )
 
-type Message struct {
+type User struct {
+	ID       int    `json:"id"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type ChatMessage struct {
 	ID        int       `json:"id"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
-	Status    string    `json:"status"`
+	Read      bool      `json:"read"`
 }
 
 type App struct {
 	conn      *amqp.Connection
 	channel   *amqp.Channel
 	queue     amqp.Queue
-	messages  []Message
+	messages  []ChatMessage
+	users     []User
 	messageID int
+	userID    int
 }
 
 func NewApp() *App {
 	return &App{
-		messages:  make([]Message, 0),
+		messages:  make([]ChatMessage, 0),
+		users:     make([]User, 0),
 		messageID: 0,
+		userID:    0,
 	}
+}
+
+func (app *App) initUsers() {
+	// Buat 2 user default untuk demo
+	app.users = []User{
+		{ID: 1, Username: "alice", Password: "password123"},
+		{ID: 2, Username: "bob", Password: "password123"},
+	}
+	app.userID = 2
 }
 
 func (app *App) connectRabbitMQ() error {
 	var err error
 
-	// Koneksi ke RabbitMQ
 	app.conn, err = amqp.Dial("amqp://guest:guest@localhost:5672/")
 	if err != nil {
 		return fmt.Errorf("failed to connect to RabbitMQ: %v", err)
@@ -48,10 +70,9 @@ func (app *App) connectRabbitMQ() error {
 		return fmt.Errorf("failed to open channel: %v", err)
 	}
 
-	// Declare queue
 	app.queue, err = app.channel.QueueDeclare(
-		"message_queue", // name
-		true,            // durable
+		"chat_messages", // name
+		false,           // durable
 		false,           // delete when unused
 		false,           // exclusive
 		false,           // no-wait
@@ -64,13 +85,15 @@ func (app *App) connectRabbitMQ() error {
 	return nil
 }
 
-func (app *App) publishMessage(content string) error {
+func (app *App) publishMessage(from, to, content string) error {
 	app.messageID++
-	msg := Message{
+	msg := ChatMessage{
 		ID:        app.messageID,
+		From:      from,
+		To:        to,
 		Content:   content,
 		Timestamp: time.Now(),
-		Status:    "sent",
+		Read:      false,
 	}
 
 	body, err := json.Marshal(msg)
@@ -113,95 +136,187 @@ func (app *App) consumeMessages() {
 
 	go func() {
 		for d := range msgs {
-			var msg Message
+			var msg ChatMessage
 			if err := json.Unmarshal(d.Body, &msg); err != nil {
 				log.Printf("Error unmarshaling message: %v", err)
 				continue
 			}
 
-			msg.Status = "received"
-
-			// Update message status in slice
-			for i, m := range app.messages {
-				if m.ID == msg.ID {
-					app.messages[i] = msg
-					break
-				}
-			}
-
-			log.Printf("Received message: %s", msg.Content)
+			log.Printf("Message delivered: %s -> %s: %s", msg.From, msg.To, msg.Content)
 		}
 	}()
+}
+
+func (app *App) authenticateUser(username, password string) *User {
+	for _, user := range app.users {
+		if user.Username == username && user.Password == password {
+			return &user
+		}
+	}
+	return nil
+}
+
+func (app *App) requireAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		session := sessions.Default(c)
+		username := session.Get("username")
+		if username == nil {
+			c.Redirect(http.StatusFound, "/login")
+			c.Abort()
+			return
+		}
+		c.Set("username", username)
+		c.Next()
+	}
+}
+
+func (app *App) getOtherUser(currentUser string) string {
+	for _, user := range app.users {
+		if user.Username != currentUser {
+			return user.Username
+		}
+	}
+	return ""
+}
+
+func (app *App) getMessagesForUser(username string) []ChatMessage {
+	var userMessages []ChatMessage
+	for _, msg := range app.messages {
+		if msg.From == username || msg.To == username {
+			userMessages = append(userMessages, msg)
+		}
+	}
+	return userMessages
 }
 
 func (app *App) setupRoutes() *gin.Engine {
 	r := gin.Default()
 
-	// Serve static files
+	// Session middleware
+	store := cookie.NewStore([]byte("secret-key-change-this"))
+	r.Use(sessions.Sessions("session", store))
+
+	r.LoadHTMLGlob("templates/*")
 	r.Static("/static", "./static")
 
-	// HTML template
-	r.LoadHTMLGlob("templates/*")
+	// Public routes
+	r.GET("/login", app.loginPage)
+	r.POST("/login", app.loginHandler)
+	r.GET("/logout", app.logoutHandler)
 
-	// Routes
-	r.GET("/", app.homePage)
-	r.POST("/send", app.sendMessage)
-	r.GET("/messages", app.getMessages)
-	r.DELETE("/messages/:id", app.deleteMessage)
+	// Protected routes
+	authorized := r.Group("/")
+	authorized.Use(app.requireAuth())
+	{
+		authorized.GET("/", app.chatPage)
+		authorized.POST("/send", app.sendMessage)
+		authorized.GET("/messages", app.getMessages)
+		authorized.POST("/mark-read/:id", app.markAsRead)
+	}
 
 	return r
 }
 
-func (app *App) homePage(c *gin.Context) {
-	c.HTML(http.StatusOK, "index.html", gin.H{
-		"title": "Golang Gin + RabbitMQ + HTMX",
+func (app *App) loginPage(c *gin.Context) {
+	c.HTML(http.StatusOK, "login.html", gin.H{
+		"title": "Login - Chat App",
+	})
+}
+
+func (app *App) loginHandler(c *gin.Context) {
+	username := c.PostForm("username")
+	password := c.PostForm("password")
+
+	user := app.authenticateUser(username, password)
+	if user == nil {
+		c.HTML(http.StatusOK, "login.html", gin.H{
+			"title": "Login - Chat App",
+			"error": "Username atau password salah",
+		})
+		return
+	}
+
+	session := sessions.Default(c)
+	session.Set("username", user.Username)
+	session.Set("userID", user.ID)
+	session.Save()
+
+	c.Redirect(http.StatusFound, "/")
+}
+
+func (app *App) logoutHandler(c *gin.Context) {
+	session := sessions.Default(c)
+	session.Clear()
+	session.Save()
+	c.Redirect(http.StatusFound, "/login")
+}
+
+func (app *App) chatPage(c *gin.Context) {
+	username := c.MustGet("username").(string)
+	otherUser := app.getOtherUser(username)
+
+	c.HTML(http.StatusOK, "chat.html", gin.H{
+		"title":     "Chat App",
+		"username":  username,
+		"otherUser": otherUser,
 	})
 }
 
 func (app *App) sendMessage(c *gin.Context) {
+	username := c.MustGet("username").(string)
 	content := c.PostForm("content")
+	to := c.PostForm("to")
+
 	if content == "" {
-		c.String(http.StatusBadRequest, "Content cannot be empty")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Content cannot be empty"})
 		return
 	}
 
-	err := app.publishMessage(content)
+	if to == "" {
+		to = app.getOtherUser(username)
+	}
+
+	err := app.publishMessage(username, to, content)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to send message: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send message"})
 		return
 	}
 
-	// Return updated messages list
+	// Return updated messages
+	messages := app.getMessagesForUser(username)
 	c.HTML(http.StatusOK, "messages.html", gin.H{
-		"messages": app.messages,
+		"messages":    messages,
+		"currentUser": username,
 	})
 }
 
 func (app *App) getMessages(c *gin.Context) {
+	username := c.MustGet("username").(string)
+	messages := app.getMessagesForUser(username)
+
 	c.HTML(http.StatusOK, "messages.html", gin.H{
-		"messages": app.messages,
+		"messages":    messages,
+		"currentUser": username,
 	})
 }
 
-func (app *App) deleteMessage(c *gin.Context) {
+func (app *App) markAsRead(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		c.String(http.StatusBadRequest, "Invalid ID")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
 		return
 	}
 
-	// Remove message from slice
+	// Mark message as read
 	for i, msg := range app.messages {
 		if msg.ID == id {
-			app.messages = append(app.messages[:i], app.messages[i+1:]...)
+			app.messages[i].Read = true
 			break
 		}
 	}
 
-	c.HTML(http.StatusOK, "messages.html", gin.H{
-		"messages": app.messages,
-	})
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func (app *App) close() {
@@ -217,6 +332,9 @@ func main() {
 	app := NewApp()
 	defer app.close()
 
+	// Initialize users
+	app.initUsers()
+
 	// Connect to RabbitMQ
 	err := app.connectRabbitMQ()
 	if err != nil {
@@ -229,6 +347,7 @@ func main() {
 	// Setup routes
 	r := app.setupRoutes()
 
-	fmt.Println("Server running on http://localhost:4300")
+	fmt.Println("Chat app running on http://localhost:4300")
+	fmt.Println("Users: alice/password123 dan bob/password123")
 	log.Fatal(r.Run(":4300"))
 }
